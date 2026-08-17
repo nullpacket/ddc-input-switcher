@@ -1,0 +1,11 @@
+# macOS build output
+macos/MonitorInputSwitcher.app/
+macos/*.o
+macos/*.swiftmodule
+
+# macOS cruft
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc

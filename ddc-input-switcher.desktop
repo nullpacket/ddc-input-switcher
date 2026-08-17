@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Monitor Input Switcher
+GenericName=Monitor Input Switcher
+Comment=Switch monitor inputs (DisplayPort / HDMI / USB-C) over DDC/CI
+Exec=/home/nullpacket/git/ddc-input-switcher/ddc_input_switcher.py
+Icon=video-display
+Terminal=false
+Categories=Settings;HardwareSettings;
+Keywords=monitor;display;input;ddc;kvm;switch;
+StartupNotify=false
