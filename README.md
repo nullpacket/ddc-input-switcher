@@ -40,6 +40,32 @@ To add it to the application launcher:
 cp ddc-input-switcher.desktop ~/.local/share/applications/
 ```
 
+## Start on login
+
+Tick **Start at login** in the window footer, or the item of the same name in the
+tray menu. Either writes an XDG autostart entry to
+`~/.config/autostart/ddc-input-switcher.desktop`; unticking removes it.
+
+From a terminal:
+
+```
+./ddc_input_switcher.py --enable-autostart
+./ddc_input_switcher.py --disable-autostart
+```
+
+The entry launches with `--hidden`, so on login the app goes straight to the tray
+without opening its window. That flag works on its own too if you want to start it
+that way by hand.
+
+The autostart entry is generated rather than copied, so its `Exec` line points at
+wherever this script actually lives — move the checkout and just re-enable it.
+
+Two details that make this reliable at login time: the entry carries
+`X-KDE-autostart-after=panel` so Plasma holds it until the panel exists, and the app
+retries attaching to the tray once a second for 30 seconds in case it still wins the
+race. If no tray ever appears, it falls back to showing its window rather than
+leaving you an invisible process.
+
 ## CLI
 
 The same script works headlessly, which is what to bind a hotkey to:

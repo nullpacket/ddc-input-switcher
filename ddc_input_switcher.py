@@ -3,25 +3,30 @@
 
 GUI (PyQt6) with a system tray icon, plus a small CLI for hotkey bindings:
 
-    ddc_input_switcher.py                 # open the window
-    ddc_input_switcher.py --list          # print each monitor's current input
-    ddc_input_switcher.py --set usb-c     # switch every monitor to USB-C
+    ddc_input_switcher.py                   # open the window
+    ddc_input_switcher.py --hidden          # start to the tray only (used by autostart)
+    ddc_input_switcher.py --list            # print each monitor's current input
+    ddc_input_switcher.py --set usb-c       # switch every monitor to USB-C
     ddc_input_switcher.py --set hdmi --display D5GPRS3
+    ddc_input_switcher.py --enable-autostart
 """
 
 from __future__ import annotations
 
 import argparse
 import re
+import shlex
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 
-from PyQt6.QtCore import QObject, QRunnable, QThreadPool, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QObject, QRunnable, QThreadPool, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -77,6 +82,40 @@ CLI_ALIASES = {
     "vga": 0x01,
     "dvi": 0x03,
 }
+
+
+AUTOSTART_FILE = Path.home() / ".config" / "autostart" / "ddc-input-switcher.desktop"
+
+
+def autostart_enabled() -> bool:
+    return AUTOSTART_FILE.is_file()
+
+
+def set_autostart(enabled: bool) -> None:
+    """Create or remove the XDG autostart entry for this script.
+
+    The entry is generated rather than shipped so the Exec line always points at
+    wherever this file actually lives, with no hard-coded home directory.
+    """
+    if not enabled:
+        AUTOSTART_FILE.unlink(missing_ok=True)
+        return
+
+    command = f"{shlex.quote(sys.executable)} {shlex.quote(str(Path(__file__).resolve()))} --hidden"
+    AUTOSTART_FILE.parent.mkdir(parents=True, exist_ok=True)
+    AUTOSTART_FILE.write_text(
+        "[Desktop Entry]\n"
+        "Type=Application\n"
+        "Name=Monitor Input Switcher\n"
+        "Comment=Switch monitor inputs (DisplayPort / HDMI / USB-C) over DDC/CI\n"
+        f"Exec={command}\n"
+        "Icon=video-display\n"
+        "Terminal=false\n"
+        "X-GNOME-Autostart-enabled=true\n"
+        # Ask Plasma to hold this until the panel exists, so the tray is there to
+        # dock into. The retry loop in the app covers desktops that ignore it.
+        "X-KDE-autostart-after=panel\n"
+    )
 
 
 class DdcError(RuntimeError):
@@ -300,13 +339,15 @@ class DisplayRow(QFrame):
 
 
 class MainWindow(QWidget):
-    def __init__(self):
+    def __init__(self, start_hidden: bool = False):
         super().__init__()
         self.setWindowTitle("Monitor Input Switcher")
         self.setWindowIcon(monitor_icon())
         self.displays: list[Display] = []
         self.rows: list[DisplayRow] = []
         self._tasks: list[Task] = []
+        self._start_hidden = start_hidden
+        self._tray_attempts = 0
 
         # One worker thread: ddcutil calls are serialised so they never contend
         # on the same i2c bus, and they stay in the order the user clicked them.
@@ -341,13 +382,21 @@ class MainWindow(QWidget):
         self.refresh_btn = QPushButton("Refresh status")
         self.refresh_btn.clicked.connect(self.refresh_status)
         footer.addWidget(self.refresh_btn)
+        self.autostart_box = QCheckBox("Start at login")
+        self.autostart_box.setToolTip(
+            "Adds an XDG autostart entry that launches this app straight to the tray"
+        )
+        self.autostart_box.setChecked(autostart_enabled())
+        self.autostart_box.toggled.connect(self._toggle_autostart)
+        footer.addWidget(self.autostart_box)
         footer.addStretch()
         self.status_label = QLabel()
         self.status_label.setStyleSheet("color: palette(mid);")
         footer.addWidget(self.status_label)
         root.addLayout(footer)
 
-        self.tray = self._build_tray()
+        self.tray: QSystemTrayIcon | None = None
+        self._try_build_tray()
         self.rescan()
 
     # -- plumbing ----------------------------------------------------------
@@ -419,6 +468,22 @@ class MainWindow(QWidget):
 
         self.submit(do_switch, on_done=done)
 
+    def _toggle_autostart(self, checked: bool) -> None:
+        try:
+            set_autostart(checked)
+        except OSError as exc:
+            self.set_status(f"Autostart: {exc}", error=True)
+        else:
+            self.set_status("Starts at login" if checked else "Autostart disabled")
+
+        # The checkbox and the tray entry are two views of one on-disk fact, so
+        # re-read it rather than assuming the write did what was asked.
+        actual = autostart_enabled()
+        self.autostart_box.blockSignals(True)
+        self.autostart_box.setChecked(actual)
+        self.autostart_box.blockSignals(False)
+        self._rebuild_tray_menu()
+
     # -- view --------------------------------------------------------------
 
     def _apply_scan(self, displays: list[Display]) -> None:
@@ -468,15 +533,30 @@ class MainWindow(QWidget):
 
     # -- tray --------------------------------------------------------------
 
-    def _build_tray(self) -> QSystemTrayIcon | None:
-        if not QSystemTrayIcon.isSystemTrayAvailable():
-            return None
-        tray = QSystemTrayIcon(monitor_icon(), self)
-        tray.setToolTip("Monitor Input Switcher")
-        tray.activated.connect(self._tray_activated)
-        tray.setContextMenu(QMenu())
-        tray.show()
-        return tray
+    def _try_build_tray(self) -> None:
+        """Attach to the system tray, retrying while the panel starts up.
+
+        At login this app can easily win the race against plasmashell, and a tray
+        icon created before the tray exists never appears. So keep checking for a
+        while instead of giving up on the first miss.
+        """
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            self.tray = QSystemTrayIcon(monitor_icon(), self)
+            self.tray.setToolTip("Monitor Input Switcher")
+            self.tray.activated.connect(self._tray_activated)
+            self.tray.setContextMenu(QMenu())
+            self.tray.show()
+            self._rebuild_tray_menu()
+            return
+
+        self._tray_attempts += 1
+        if self._tray_attempts <= 30:  # ~30s of grace while the desktop comes up
+            QTimer.singleShot(1000, self._try_build_tray)
+        elif self._start_hidden:
+            # No tray ever showed up; better a visible window than a process the
+            # user cannot reach at all.
+            self.set_status("No system tray available", error=True)
+            self.show_window()
 
     def _tray_activated(self, reason) -> None:
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
@@ -509,6 +589,11 @@ class MainWindow(QWidget):
         rescan = QAction("Rescan monitors", menu)
         rescan.triggered.connect(self.rescan)
         menu.addAction(rescan)
+        autostart = QAction("Start at login", menu)
+        autostart.setCheckable(True)
+        autostart.setChecked(autostart_enabled())
+        autostart.triggered.connect(self._toggle_autostart)
+        menu.addAction(autostart)
         menu.addSeparator()
         quit_act = QAction("Quit", menu)
         quit_act.triggered.connect(QApplication.instance().quit)
@@ -589,8 +674,19 @@ def main() -> int:
     parser.add_argument("--list", action="store_true", help="print current inputs and exit")
     parser.add_argument("--set", metavar="INPUT", help="switch to INPUT (dp, hdmi, usb-c, 0x1b…) and exit")
     parser.add_argument("--display", metavar="SERIAL", help="limit --set to one monitor's serial number")
+    parser.add_argument("--hidden", action="store_true",
+                        help="start to the tray without opening the window (used by autostart)")
+    parser.add_argument("--enable-autostart", action="store_true",
+                        help="install the autostart entry and exit")
+    parser.add_argument("--disable-autostart", action="store_true",
+                        help="remove the autostart entry and exit")
     args = parser.parse_args()
 
+    if args.enable_autostart or args.disable_autostart:
+        set_autostart(args.enable_autostart)
+        state = "enabled" if autostart_enabled() else "disabled"
+        print(f"Autostart {state}: {AUTOSTART_FILE}")
+        return 0
     if args.list:
         return cli_list()
     if args.set:
@@ -605,8 +701,9 @@ def main() -> int:
         QMessageBox.critical(None, "Monitor Input Switcher", "ddcutil is not installed or not on PATH.")
         return 1
 
-    win = MainWindow()
-    win.show()
+    win = MainWindow(start_hidden=args.hidden)
+    if not args.hidden:
+        win.show()
     return app.exec()
 
 
