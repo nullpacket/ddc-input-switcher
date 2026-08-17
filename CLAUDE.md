@@ -32,10 +32,10 @@ Read this before assuming anything works.
 input decoding, the CLI, and the GUI all run. The user confirmed a real input
 switch works.
 
-**macOS side — written blind, never compiled.** It was authored on the Linux box,
-which has no Swift toolchain and no Apple hardware. `main.swift` has never been
-through `swiftc`. Expect build errors on first `./build.sh` and fix them.
-`switch-input.sh` is plain bash and is the lower-risk thing to validate first.
+**macOS side — verified on an Apple Silicon Mac (2026-08-17).** `main.swift` was
+authored on the Linux box with no Swift toolchain and no Apple hardware, so it went
+to the Mac untested — but it compiled clean through `./build.sh` with no source
+changes, and the menu bar app works. Treat it as working code now, not a draft.
 
 The m1ddc command syntax and output format were taken from its source, not guessed:
 

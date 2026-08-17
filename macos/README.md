@@ -8,12 +8,12 @@ to the Linux box without reaching for the OSD joystick.
 
 ## Status
 
-> The Swift menu bar app was written on the Linux box and has **not been compiled
-> or run on a Mac yet** — there was no Swift toolchain or Apple hardware available
-> to test it. Expect to fix build errors on the first `./build.sh`.
->
-> `switch-input.sh` is plain bash and is the safer thing to try first: it needs no
-> compiler and exercises the same m1ddc commands the app uses.
+Working. The Swift menu bar app was written on the Linux box without a Swift
+toolchain or any Apple hardware to test against, then built on an Apple Silicon Mac
+on 2026-08-17 — it compiled clean with no source changes.
+
+`switch-input.sh` remains the quickest way to sanity-check a new machine: it needs
+no compiler and exercises the same m1ddc commands the app uses.
 
 ## Requirements
 
